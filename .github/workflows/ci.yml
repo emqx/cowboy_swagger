@@ -11,14 +11,16 @@ jobs:
   ci:
     name: Run checks and tests over ${{matrix.otp_vsn}} and ${{matrix.os}}
     runs-on: ${{matrix.os}}
+    env:
+      ERL_AFLAGS: "-enable-feature all"
     strategy:
       matrix:
-        otp_vsn: [23, 24]
+        otp_vsn: [24,25]
         os: [ubuntu-latest]
     steps:
-      - uses: actions/checkout@v2
-      - uses: erlef/setup-beam@v1
+      - uses: actions/checkout@v3
+      - uses: erlef/setup-beam@v1.15.4
         with:
           otp-version: ${{matrix.otp_vsn}}
-          rebar3-version: '3.14'
+          rebar3-version: '3.22.0'
       - run: rebar3 test
