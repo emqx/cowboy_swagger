@@ -13,11 +13,11 @@ jobs:
     runs-on: ${{matrix.os}}
     strategy:
       matrix:
-        otp_vsn: [23, 24]
+        otp_vsn: [24,25]
         os: [ubuntu-latest]
     steps:
-      - uses: actions/checkout@v2
-      - uses: erlef/setup-beam@v1
+      - uses: actions/checkout@v3
+      - uses: erlef/setup-beam@v1.15.4
         with:
           otp-version: ${{matrix.otp_vsn}}
           rebar3-version: '3.14'
