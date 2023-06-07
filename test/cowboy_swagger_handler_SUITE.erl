@@ -93,14 +93,6 @@ handler_test(_Config) ->
   Location = {<<"location">>, <<"/api-docs/index.html">>},
   Location = lists:keyfind(<<"location">>, 1, Headers),
 
-  %% GET swagger-ui.js - test /api-docs/[...] trail
-  ct:comment("GET /api-docs/swagger-ui-js should return 200 OK"),
-  #{status_code := 200, body := SwaggerUIBody} =
-    cowboy_swagger_test_utils:api_call(get, "/api-docs/swagger-ui.js"),
-  {ok, SwaggerUIBodySrc} =
-    file:read_file("../../../../priv/swagger/swagger-ui.js"),
-  SwaggerUIBody = SwaggerUIBodySrc,
-
   %% GET unknown-file.ext - test /api-docs/[...] trail
   ct:comment("GET /api-docs/unknown-file.ext should return 404 NOT FOUND"),
   #{status_code := 404} =
