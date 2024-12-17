@@ -1,77 +1,76 @@
 %%% @doc cowboy-swagger main interface.
 -module(cowboy_swagger).
 
--ignore_xref([{?MODULE, add_definition, 1}]).
 %% API
--export([to_json/1, add_definition/1, add_definition/2, add_definition_array/2, schema/1]).
-
+-export([to_json/1, add_definition/1, add_definition/2, add_definition_array/2,
+         schema/1]).
 %% Utilities
--export([enc_json/1, dec_json/1]).
+-export([enc_json/1, dec_json/1, normalize_json/1]).
 -export([swagger_paths/1, validate_metadata/1]).
 -export([filter_cowboy_swagger_handler/1]).
--export([get_existing_definitions/1]).
+-export([get_existing_definitions/2, get_global_spec/0, get_global_spec/1,
+         set_global_spec/1]).
+
+% is_visible is used as a maps:filter/2 predicate, which requires a /2 arity function
+-hank([{unnecessary_function_arguments, [{is_visible, 2}]}]).
+
+-elvis([{elvis_style, no_throw, disable}]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Types.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -opaque parameter_obj() ::
-  #{ name        => iodata()
-   , in          => iodata()
-   , description => iodata()
-   , required    => boolean()
-   , type        => iodata()
-   , schema      => iodata()
-   }.
+    #{name => binary(),
+      in => binary(),
+      description => binary(),
+      required => boolean(),
+      type => binary(),
+      schema => binary()}.
+
 -export_type([parameter_obj/0]).
 
--opaque response_obj() ::
-  #{ description => binary()
-   }.
+-opaque response_obj() :: #{description => binary()}.
+
 -type responses_definitions() :: #{binary() => response_obj()}.
+
 -export_type([response_obj/0, responses_definitions/0]).
 
--type parameter_definition_name () :: binary().
+-type parameter_definition_name() :: binary().
 -type property_desc() ::
-  #{ type => binary()
-   , description => binary()
-   , example => binary()
-   , items => property_desc()
-   }.
+    #{type => binary(),
+      description => binary(),
+      example => binary(),
+      items => property_desc()}.
 -type property_obj() :: #{binary() => property_desc()}.
 -type parameters_definitions() ::
-  #{parameter_definition_name() =>
-      #{ type => binary()
-       , properties => property_obj()
-       }}.
+    #{parameter_definition_name() =>
+          #{type => binary(),
+            properties => property_obj(),
+            _ => _}}.
 -type parameters_definition_array() ::
-  #{parameter_definition_name() =>
-      #{ type => binary()
-       , items => #{ type => binary()
-                   , properties => property_obj()
-                   }
-       }}.
--export_type([ parameter_definition_name/0
-             , property_obj/0
-             , parameters_definitions/0
-             , parameters_definition_array/0
-             ]).
+    #{parameter_definition_name() =>
+          #{type => binary(), items => #{type => binary(), properties => property_obj()}}}.
+
+-export_type([parameter_definition_name/0, property_obj/0, parameters_definitions/0,
+              parameters_definition_array/0]).
 
 %% Swagger map spec
 -opaque swagger_map() ::
-  #{ description => iodata()
-   , summary     => iodata()
-   , parameters  => [parameter_obj()]
-   , tags        => [iodata()]
-   , consumes    => [iodata()]
-   , produces    => [iodata()]
-   , responses   => responses_definitions()
-   }.
+    #{description => binary(),
+      summary => binary(),
+      parameters => [parameter_obj()],
+      tags => [binary()],
+      consumes => [binary()],
+      produces => [binary()],
+      responses => responses_definitions()}.
+
 -type metadata() :: trails:metadata(swagger_map()).
+
 -export_type([swagger_map/0, metadata/0]).
 
--type swagger_version() :: swagger_2_0
-                         | openapi_3_0_0.
+-type swagger_version() :: swagger_2_0 | openapi_3_0_0.
+
 -export_type([swagger_version/0]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -79,113 +78,201 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% @doc Returns the swagger json specification from given `trails'.
-%%      This function basically takes the metadata from each `trails:trail()'
+%%      This function basically takes the metadata from each `t:trails:trail()'
 %%      (which must be compliant with Swagger specification) and builds the
 %%      required `swagger.json'.
 -spec to_json([trails:trail()]) -> jsx:json_text().
 to_json(Trails) ->
-  Default = #{info => #{title => <<"API-DOCS">>}},
-  GlobalSpec = normalize_map_values(
-    application:get_env(cowboy_swagger, global_spec, Default)),
-  SanitizeTrails = filter_cowboy_swagger_handler(Trails),
-  SwaggerSpec = create_swagger_spec(GlobalSpec, SanitizeTrails),
-  enc_json(SwaggerSpec).
+    Default = #{info => #{title => <<"API-DOCS">>}},
+    GlobalSpec = get_global_spec(Default),
+    SanitizeTrails = filter_cowboy_swagger_handler(Trails),
+    SwaggerSpec = create_swagger_spec(GlobalSpec, SanitizeTrails),
+    enc_json(SwaggerSpec).
 
--spec add_definition_array( Name::parameter_definition_name()
-                          , Properties::property_obj()
-                          ) ->
-  ok.
+-spec add_definition_array(Name :: parameter_definition_name(),
+                           Properties :: property_obj()) ->
+                              ok.
 add_definition_array(Name, Properties) ->
-  DefinitionArray = build_definition_array(Name, Properties),
-  add_definition(DefinitionArray).
+    DefinitionArray = build_definition_array(Name, Properties),
+    add_definition(DefinitionArray).
 
--spec add_definition( Name::parameter_definition_name()
-                    , Properties::property_obj()
-                    ) ->
-  ok.
+-spec add_definition(Name :: parameter_definition_name(), Properties :: property_obj()) ->
+                        ok.
 add_definition(Name, Properties) ->
-  Definition = build_definition(Name, Properties),
-  add_definition(Definition).
+    Definition = build_definition(Name, Properties),
+    add_definition(Definition).
 
--spec add_definition( Definition :: parameters_definitions()
-                                  | parameters_definition_array()
-                    ) ->
-  ok.
+-spec add_definition(Definition ::
+                         parameters_definitions() | parameters_definition_array()) ->
+                        ok.
 add_definition(Definition) ->
-  CurrentSpec = application:get_env(cowboy_swagger, global_spec, #{}),
-  NewDefinitions = maps:merge( get_existing_definitions(CurrentSpec)
-                             , Definition
-                             ),
-  NewSpec = prepare_new_global_spec(CurrentSpec, NewDefinitions),
-  application:set_env(cowboy_swagger, global_spec, NewSpec).
+    CurrentSpec = get_global_spec(),
+    NormDefinition = normalize_json(Definition),
+    Type = definition_type(NormDefinition),
+    NewDefinitions =
+        maps:merge(get_existing_definitions(CurrentSpec, Type), normalize_json(NormDefinition)),
+    NewSpec = prepare_new_global_spec(CurrentSpec, NewDefinitions, Type),
+    set_global_spec(NewSpec).
 
--spec schema(DefinitionName::parameter_definition_name()) ->
-  map().
+definition_type(Definition) ->
+    case maps:values(Definition) of
+        [#{<<"in">> := In}] when In =:= <<"query">>; In =:= <<"path">>; In =:= <<"header">> ->
+            <<"parameters">>;
+        _ ->
+            <<"schemas">>
+    end.
+
+-spec schema(DefinitionName :: parameter_definition_name()) ->
+                #{<<_:32>> => <<_:64, _:_*8>>}.
 schema(DefinitionName) ->
-  case swagger_version() of
-    swagger_2_0 ->
-      #{<<"$ref">> => <<"#/definitions/", DefinitionName/binary>>};
-    openapi_3_0_0 ->
-      #{<<"$ref">> => <<"#/components/schemas/", DefinitionName/binary>>}
-  end.
-
+    case swagger_version() of
+        swagger_2_0 ->
+            #{<<"$ref">> => <<"#/definitions/", DefinitionName/binary>>};
+        openapi_3_0_0 ->
+            #{<<"$ref">> => <<"#/components/schemas/", DefinitionName/binary>>}
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Utilities.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-%% @hidden
+%% @private
 -spec enc_json(jsx:json_term()) -> jsx:json_text().
 enc_json(Json) ->
-  jsx:encode(Json, [uescape]).
+    jsx:encode(Json, [uescape]).
 
-%% @hidden
+%% @private
 -spec dec_json(iodata()) -> jsx:json_term().
 dec_json(Data) ->
-  try jsx:decode(Data, [return_maps])
-  catch
-    _:{error, _} ->
-      throw(bad_json)
-  end.
+    try
+        jsx:decode(Data, [return_maps])
+    catch
+        _:{error, _} ->
+            throw(bad_json)
+    end.
 
-%% @hidden
+%% We assume the jsx representation of JSON as Erlang terms:
+%%   true/false/null: 'true' | 'false' | 'null'
+%%   number:          integer() | float()
+%%   string:          binary() | atom()
+%%   array:           [ JSON ]
+%%   object:          #{ Label => JSON, ... } |  [{ Label, JSON }] | [{}]
+%%   date string:     {{Year, Month, Day}, {Hour, Min, Sec}}
+%% where
+%%   Label:           binary() | atom() | integer()
+%%
+%% We also detect lists of printable characters (plain Erlang strings) and
+%% convert them into binaries. This use is deprecated and should be
+%% removed (for example, a json array [64] becomes <<"@">>).
+%%
+%% When normalizing, we make all strings and labels be binaries,
+%% and all objects be maps, not proplists.
+
+%% @private
+-spec normalize_json(jsx:json_term()) -> jsx:json_term().
+normalize_json(Json) when is_map(Json) ->
+    normalize_json_proplist(maps:to_list(Json));
+normalize_json([]) ->
+    []; % empty array
+normalize_json([{}]) ->
+    #{}; % special case in jsx for empty map as list
+normalize_json([{_K, _V} | _] = Json) ->
+    normalize_json_proplist(Json); % map as proplist
+normalize_json(Json) when is_list(Json) ->
+    case io_lib:printable_list(Json) of
+        true ->
+            unicode:characters_to_binary(Json);
+        false ->
+            normalize_json_list(Json)
+    end;
+normalize_json(true) ->
+    true;
+normalize_json(false) ->
+    false;
+normalize_json(null) ->
+    null;
+normalize_json(Json) when is_atom(Json) ->
+    erlang:atom_to_binary(Json, utf8);
+normalize_json(Json) ->
+    Json.
+
+normalize_json_key(K) when is_atom(K) ->
+    erlang:atom_to_binary(K, utf8);
+normalize_json_key(K) when is_integer(K) ->
+    erlang:integer_to_binary(K);
+normalize_json_key(K) ->
+    K.
+
+normalize_json_proplist(Proplist) ->
+    F = fun({K, V}, Acc) -> maps:put(normalize_json_key(K), normalize_json(V), Acc) end,
+    lists:foldl(F, #{}, Proplist).
+
+normalize_json_list(List) ->
+    F = fun(V, Acc) -> [normalize_json(V) | Acc] end,
+    lists:foldr(F, [], List).
+
+%% @private
 -spec swagger_paths([trails:trail()]) -> map().
 swagger_paths(Trails) ->
-  swagger_paths(Trails, undefined).
+    swagger_paths(Trails, undefined).
 
 -spec swagger_paths([trails:trail()], binary() | string() | undefined) -> map().
 swagger_paths(Trails, BasePath) ->
     Paths = translate_swagger_paths(Trails, #{}),
     refactor_base_path(Paths, BasePath).
 
-%% @hidden
+%% @private
 -spec validate_metadata(trails:metadata(_)) -> metadata().
 validate_metadata(Metadata) ->
-  validate_swagger_map(Metadata).
+    validate_swagger_map(Metadata).
 
-%% @hidden
+%% @private
 -spec filter_cowboy_swagger_handler([trails:trail()]) -> [trails:trail()].
 filter_cowboy_swagger_handler(Trails) ->
-  F = fun(Trail) ->
-    MD = trails:metadata(Trail),
-    maps:size(maps:filter(fun is_visible/2, MD)) /= 0
-  end,
-  lists:filter(F, Trails).
+    %% Keeps only trails with at least one non-hidden method.
+    %% (All the cowboy_swagger_handler methdods are marked as hidden.)
+    F = fun(Trail) ->
+           MD = get_metadata(Trail),
+           maps:size(
+               maps:filter(fun is_visible/2, MD))
+           /= 0
+        end,
+    lists:filter(F, Trails).
 
--spec get_existing_definitions(CurrentSpec :: map()) ->
-  Definition :: parameters_definitions()
-              | parameters_definition_array().
-get_existing_definitions(CurrentSpec) ->
-  case swagger_version() of
-    swagger_2_0 ->
-      maps:get(definitions, CurrentSpec, #{});
-    openapi_3_0_0 ->
-      case CurrentSpec of
-        #{components :=
-            #{schemas := Schemas }} -> Schemas;
-        _Other                      -> #{}
-      end
-  end.
+-spec get_existing_definitions(CurrentSpec :: jsx:json_term(),
+                               Type :: atom() | binary()) ->
+                                  Definition ::
+                                      parameters_definitions() | parameters_definition_array().
+get_existing_definitions(CurrentSpec, Type) when is_atom(Type) ->
+    get_existing_definitions(CurrentSpec, atom_to_binary(Type, utf8));
+get_existing_definitions(CurrentSpec, Type) when is_binary(Type) ->
+    case swagger_version() of
+        swagger_2_0 ->
+            maps:get(<<"definitions">>, CurrentSpec, #{});
+        openapi_3_0_0 ->
+            case CurrentSpec of
+                #{<<"components">> := #{Type := Def}} ->
+                    Def;
+                _Other ->
+                    #{}
+            end
+    end.
+
+-spec get_global_spec() -> jsx:json_term().
+get_global_spec() ->
+    get_global_spec(#{}).
+
+-spec get_global_spec(jsx:json_term()) -> jsx:json_term().
+get_global_spec(Default) ->
+    normalize_json(application:get_env(cowboy_swagger, global_spec, Default)).
+
+-spec set_global_spec(jsx:json_term()) -> ok.
+set_global_spec(NewSpec) ->
+    application:set_env(cowboy_swagger, global_spec, normalize_json(NewSpec)).
+
+-spec get_metadata(trails:trail()) -> jsx:json_term().
+get_metadata(Trail) ->
+    normalize_json(trails:metadata(Trail)).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Private API.
@@ -194,167 +281,145 @@ get_existing_definitions(CurrentSpec) ->
 %% @private
 -spec swagger_version() -> swagger_version().
 swagger_version() ->
-  case application:get_env(cowboy_swagger, global_spec, #{}) of
-    #{openapi := "3.0.0"} -> openapi_3_0_0;
-    #{swagger := "2.0"}   -> swagger_2_0;
-    _Other                -> swagger_2_0
-  end.
+    case get_global_spec() of
+        #{<<"openapi">> := <<"3.0.0">>} ->
+            openapi_3_0_0;
+        #{<<"swagger">> := <<"2.0">>} ->
+            swagger_2_0;
+        _Other ->
+            swagger_2_0
+    end.
 
 %% @private
-is_visible(_Method, Metadata) ->
-  not maps:get(hidden, Metadata, false).
+is_visible(_Key, Metadata) when is_map(Metadata) ->
+    %% Note that `"hidden"` is not a standard flag in OpenAPI
+    not maps:get(<<"hidden">>, Metadata, false);
+is_visible(_Key, _Metadata) ->
+    false.
 
 %% @private
 translate_swagger_paths([], Acc) ->
-  Acc;
+    Acc;
 translate_swagger_paths([Trail | T], Acc) ->
-  Path = normalize_path(trails:path_match(Trail)),
-  Metadata = normalize_map_values(validate_metadata(trails:metadata(Trail))),
-  translate_swagger_paths(T, maps:put(Path, Metadata, Acc)).
+    Path = normalize_path(trails:path_match(Trail)),
+    Metadata = validate_metadata(get_metadata(Trail)),
+    translate_swagger_paths(T, maps:put(Path, Metadata, Acc)).
 
 %% @private
 refactor_base_path(PathMap, undefined) ->
-  PathMap;
+    PathMap;
 refactor_base_path(PathMap, BasePath) when is_list(BasePath) ->
-  refactor_base_path(PathMap, list_to_binary(BasePath));
+    refactor_base_path(PathMap, list_to_binary(BasePath));
 refactor_base_path(PathMap, BasePath) ->
-  Fun =
-    fun(Path, NextPathMap) ->
-      maps:put(remove_base_path(Path, BasePath), maps:get(Path, PathMap), NextPathMap)
-    end,
-  lists:foldl(Fun, #{}, maps:keys(PathMap)).
+    Fun = fun(Path, NextPathMap) ->
+             maps:put(remove_base_path(Path, BasePath), maps:get(Path, PathMap), NextPathMap)
+          end,
+    lists:foldl(Fun, #{}, maps:keys(PathMap)).
 
 %% /base_path/api -> /api
 %% @private
--spec(remove_base_path(binary(), binary()) -> binary()).
+-spec remove_base_path(binary(), binary()) -> binary().
 remove_base_path(Path, BasePath) ->
-  BasePathLength = erlang:size(BasePath),
-  MatchLength = BasePathLength + 1,
-  case binary:match(Path, <<BasePath/binary, "/">>) of
-    {0, MatchLength} ->
-      binary:part(Path, BasePathLength, erlang:size(Path) - BasePathLength);
-    _ ->
-      Path
-  end.
+    BasePathLength = erlang:size(BasePath),
+    MatchLength = BasePathLength + 1,
+    case binary:match(Path, <<BasePath/binary, "/">>) of
+        {0, MatchLength} ->
+            binary:part(Path, BasePathLength, erlang:size(Path) - BasePathLength);
+        _ ->
+            Path
+    end.
 
 %% @private
 normalize_path(Path) ->
-  re:replace(
-    re:replace(Path, "\\:\\w+", "\\{&\\}", [global]),
-    "\\[|\\]|\\:", "", [{return, binary}, global]).
+    re:replace(
+        re:replace(Path, "\\:\\w[\\w-]*", "\\{&\\}", [global]),
+        "\\[|\\]|\\:",
+        "",
+        [{return, binary}, global]).
 
 %% @private
-normalize_map_values(Map) when is_map(Map) ->
-  normalize_map_values(maps:to_list(Map));
-normalize_map_values(Proplist) ->
-  F = fun({K, []}, Acc) ->
-        maps:put(K, normalize_list_values([]), Acc);
-      ({K, V}, Acc) when is_list(V) ->
-        case io_lib:printable_list(V) of
-          true  -> maps:put(K, list_to_binary(V), Acc);
-          false -> maps:put(K, normalize_list_values(V), Acc)
-        end;
-      ({K, V}, Acc) when is_map(V) ->
-        maps:put(K, normalize_map_values(V), Acc);
-      ({K, V}, Acc) ->
-        maps:put(K, V, Acc)
-      end,
-  lists:foldl(F, #{}, Proplist).
-
-%% @private
-normalize_list_values(List) ->
-  F = fun(V, Acc) when is_list(V) ->
-          case io_lib:printable_list(V) of
-            true  -> [list_to_binary(V) | Acc];
-            false -> [normalize_list_values(V) | Acc]
-          end;
-      (V, Acc) when is_map(V) ->
-        [normalize_map_values(V) | Acc];
-      (V, Acc) ->
-        [V | Acc]
-      end,
-  lists:foldr(F, [], List).
-
-%% @private
-create_swagger_spec(#{swagger := _Version} = GlobalSpec, SanitizeTrails) ->
-  BasePath =  maps:get(basePath, GlobalSpec, undefined),
-  SwaggerPaths = swagger_paths(SanitizeTrails, BasePath),
-  GlobalSpec#{paths => SwaggerPaths};
-create_swagger_spec(#{openapi := _Version} = GlobalSpec, SanitizeTrails) ->
-  BasePath = deconstruct_openapi_url(GlobalSpec),
-  SwaggerPaths = swagger_paths(SanitizeTrails, BasePath),
-  GlobalSpec#{paths => SwaggerPaths};
+create_swagger_spec(#{<<"swagger">> := _Version} = GlobalSpec, SanitizeTrails) ->
+    BasePath = maps:get(<<"basePath">>, GlobalSpec, undefined),
+    SwaggerPaths = swagger_paths(SanitizeTrails, BasePath),
+    GlobalSpec#{<<"paths">> => SwaggerPaths};
+create_swagger_spec(#{<<"openapi">> := _Version} = GlobalSpec, SanitizeTrails) ->
+    BasePath = deconstruct_openapi_url(GlobalSpec),
+    SwaggerPaths = swagger_paths(SanitizeTrails, BasePath),
+    GlobalSpec#{<<"paths">> => SwaggerPaths};
 create_swagger_spec(GlobalSpec, SanitizeTrails) ->
-  create_swagger_spec(GlobalSpec#{openapi => <<"3.0.0">>}, SanitizeTrails).
+    create_swagger_spec(GlobalSpec#{<<"openapi">> => <<"3.0.0">>}, SanitizeTrails).
 
 %% @private
 deconstruct_openapi_url(GlobalSpec) ->
-    [Server|_] = maps:get(servers, GlobalSpec, [#{}]),
-    Url = maps:get(url, Server, <<"">>),
+    [Server | _] = maps:get(<<"servers">>, GlobalSpec, [#{}]),
+    Url = maps:get(<<"url">>, Server, <<"">>),
     maps:get(path, uri_string:parse(Url)).
 
 %% @private
-validate_swagger_map(Map) ->
-  F = fun(_K, V) ->
-        Params = validate_swagger_map_params(maps:get(parameters, V, [])),
-        Responses = validate_swagger_map_responses(maps:get(responses, V, #{})),
-        V#{parameters => Params, responses => Responses}
-      end,
-  maps:map(F, Map).
+validate_swagger_map(Map) when is_map(Map) ->
+    %% Note that although per-path entries are usually methods such as
+    %% `"get": {...}`, there may also be entries whose values are not maps,
+    %% such as path-global `"parameters": [...]'.
+    F = fun (_K, V) when is_map(V) ->
+                Params = validate_swagger_map_params(maps:get(<<"parameters">>, V, [])),
+                Responses = validate_swagger_map_responses(maps:get(<<"responses">>, V, #{})),
+                V#{<<"parameters">> => Params, <<"responses">> => Responses};
+            (_K, V) ->
+                V
+        end,
+    maps:map(F, Map);
+validate_swagger_map(Other) ->
+    Other.
 
 %% @private
 validate_swagger_map_params(Params) ->
-  ValidateParams =
-    fun(E) ->
-      case maps:get(name, E, undefined) of
-        undefined -> false;
-        _         -> {true, E#{in => maps:get(in, E, <<"path">>)}}
-      end
-    end,
-  lists:filtermap(ValidateParams, Params).
+    ValidateParams =
+        fun(E) ->
+           case maps:get(<<"name">>, E, undefined) of
+               undefined ->
+                   maps:is_key(<<"$ref">>, E);
+               _ ->
+                   {true, E#{<<"in">> => maps:get(<<"in">>, E, <<"path">>)}}
+           end
+        end,
+    lists:filtermap(ValidateParams, Params).
 
 %% @private
 validate_swagger_map_responses(Responses) ->
-  F = fun(_K, V) -> V#{description => maps:get(description, V, <<"">>)} end,
-  maps:map(F, Responses).
+    F = fun(_K, V) -> V#{<<"description">> => maps:get(<<"description">>, V, <<"">>)} end,
+    maps:map(F, Responses).
 
 %% @private
--spec build_definition( Name::parameter_definition_name()
-                      , Properties::property_obj()
-                      ) ->
-  parameters_definitions().
-build_definition(Name, Properties) ->
-  #{Name => #{ type => <<"object">>
-             , properties => Properties
-             }}.
+-spec build_definition(Name :: parameter_definition_name(),
+                       Properties :: property_obj()) ->
+                          parameters_definitions().
+build_definition(Name, Properties) when is_atom(Name) ->
+    build_definition(erlang:atom_to_binary(Name, utf8), Properties);
+build_definition(Name, Properties) when is_binary(Name) ->
+    #{Name => #{<<"type">> => <<"object">>, <<"properties">> => Properties}}.
 
 %% @private
--spec build_definition_array( Name::parameter_definition_name()
-                            , Properties::property_obj()
-                            ) ->
-  parameters_definition_array().
-build_definition_array(Name, Properties) ->
-  #{Name => #{ type => <<"array">>
-             , items => #{ type => <<"object">>
-                         , properties => Properties
-                         }
-             }}.
+-spec build_definition_array(Name :: parameter_definition_name(),
+                             Properties :: property_obj()) ->
+                                parameters_definition_array().
+build_definition_array(Name, Properties) when is_atom(Name) ->
+    build_definition_array(erlang:atom_to_binary(Name, utf8), Properties);
+build_definition_array(Name, Properties) when is_binary(Name) ->
+    #{Name =>
+          #{<<"type">> => <<"array">>,
+            <<"items">> => #{<<"type">> => <<"object">>, <<"properties">> => Properties}}}.
 
 %% @private
--spec prepare_new_global_spec( CurrentSpec :: map()
-                             , Definitions :: parameters_definitions()
-                                            | parameters_definition_array()
-                             ) ->
-  NewSpec :: map().
-prepare_new_global_spec(CurrentSpec, Definitions) ->
-  case swagger_version() of
-    swagger_2_0 ->
-      CurrentSpec#{definitions => Definitions
-                  };
-    openapi_3_0_0 ->
-      Components = maps:get(components, CurrentSpec, #{}),
-      CurrentSpec#{components =>
-                        Components#{ schemas => Definitions
-                     }
-                  }
-  end.
+-spec prepare_new_global_spec(CurrentSpec :: jsx:json_term(),
+                              Definitions ::
+                                  parameters_definitions() | parameters_definition_array(),
+                              Type :: binary()) ->
+                                 NewSpec :: jsx:json_term().
+prepare_new_global_spec(CurrentSpec, Definitions, Type) ->
+    case swagger_version() of
+        swagger_2_0 ->
+            CurrentSpec#{<<"definitions">> => Definitions};
+        openapi_3_0_0 ->
+            Components = maps:get(<<"components">>, CurrentSpec, #{}),
+            CurrentSpec#{<<"components">> => Components#{Type => Definitions}}
+    end.
