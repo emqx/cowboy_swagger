@@ -2,8 +2,8 @@
 -module(cowboy_swagger).
 
 %% API
--export([to_json/1, add_definition/1, add_definition/2, add_definition_array/2,
-         schema/1]).
+-export([to_json/1, add_definition/1, add_definition/2, add_definitions/1,
+         add_definition_array/2, schema/1]).
 %% Utilities
 -export([enc_json/1, dec_json/1, normalize_json/1]).
 -export([swagger_paths/1, validate_metadata/1]).
@@ -106,12 +106,23 @@ add_definition(Name, Properties) ->
                          parameters_definitions() | parameters_definition_array()) ->
                         ok.
 add_definition(Definition) ->
+    add_definitions([Definition]).
+
+-spec add_definitions(Definitions ::
+                          [parameters_definitions() | parameters_definition_array()]) ->
+                         ok.
+add_definitions(Definitions) ->
     CurrentSpec = get_global_spec(),
-    NormDefinition = normalize_json(Definition),
-    Type = definition_type(NormDefinition),
-    NewDefinitions =
-        maps:merge(get_existing_definitions(CurrentSpec, Type), normalize_json(NormDefinition)),
-    NewSpec = prepare_new_global_spec(CurrentSpec, NewDefinitions, Type),
+    NewSpec =
+        lists:foldl(fun(Definition, SpecAcc) ->
+                       NormDefinition = normalize_json(Definition),
+                       Type = definition_type(NormDefinition),
+                       NewDefinitions =
+                           maps:merge(get_existing_definitions(SpecAcc, Type), NormDefinition),
+                       prepare_new_global_spec(SpecAcc, NewDefinitions, Type)
+                    end,
+                    CurrentSpec,
+                    Definitions),
     set_global_spec(NewSpec).
 
 definition_type(Definition) ->
