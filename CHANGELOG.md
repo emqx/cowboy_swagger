@@ -1,6 +1,6 @@
 # Changelog
 
-## [2.7.0-emqx3](https://github.com/emqx/cowboy_swagger/tree/2.7.0-emqx3) (2026-05-05)
+## [3.0.0](https://github.com/emqx/cowboy_swagger/tree/3.0.0) (2026-05-05)
 
 EMQX-only fork release.
 

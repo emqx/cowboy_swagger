@@ -2,7 +2,7 @@
 %%%
 %%%      Originally this module exposed the bundled Swagger UI under
 %%%      `/api-docs/*' and a JSON spec under `/api-docs/swagger.json'.
-%%%      Both were removed in 2.7.0-emqx3 to drop ~11 MB of static UI
+%%%      Both were removed in v3.0.0 to drop ~11 MB of static UI
 %%%      assets from downstream releases (notably EMQX); consuming
 %%%      applications now own the spec-serving HTTP routes themselves.
 %%%
