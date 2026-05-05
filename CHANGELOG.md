@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.7.0-emqx3](https://github.com/emqx/cowboy_swagger/tree/2.7.0-emqx3) (2026-05-05)
+
+EMQX-only fork release.
+
+- Removed the bundled Swagger UI assets (`priv/swagger/*`, ~11 MB) so they no longer ship with downstream releases.
+- Removed `cowboy_swagger_redirect_handler` and `cowboy_swagger_json_handler` modules and the `/api-docs[/...]` trails registered by `cowboy_swagger_handler:trails/1`. That function now returns `[]`.
+- Consuming applications (notably EMQX via `minirest`) are now responsible for registering their own HTTP routes for serving the OpenAPI spec.
+- The library API in `cowboy_swagger.erl` (`to_json/1`, `add_definitions/1`, `get_global_spec/0`, `filter_cowboy_swagger_handler/1`, `normalize_json/1`, `schema/1`, etc.) is unchanged.
+
 ## [2.5.0](https://github.com/inaka/cowboy_swagger/tree/2.5.0) (2021-09-23)
 
 [Full Changelog](https://github.com/inaka/cowboy_swagger/compare/2.4.0...2.5.0)
